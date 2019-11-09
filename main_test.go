@@ -20,30 +20,28 @@ var protoCases = []protoTestcase{
 	{0.0, 0.0, nil},
 }
 
-
 func areSlicesEqual(a, b []uint32) bool {
 
-    // If one is nil, the other must also be nil.
-    if (a == nil) != (b == nil) { 
-        return false; 
-    }
+	// If one is nil, the other must also be nil.
+	if (a == nil) != (b == nil) {
+		return false
+	}
 
-    if len(a) != len(b) {
-        return false
-    }
+	if len(a) != len(b) {
+		return false
+	}
 
-    for i := range a {
-        if a[i] != b[i] {
-            return false
-        }
-    }
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
 
-    return true
+	return true
 }
 
-
 func TestProto(t *testing.T) {
-	
+
 	for _, tcase := range protoCases {
 
 		test := &appsinstalled.UserApps{
@@ -75,6 +73,6 @@ func TestProto(t *testing.T) {
 			t.Error("Apps-s are not equal: ", test.Apps, newTest.Apps)
 		}
 
-	}	
+	}
 
 }
