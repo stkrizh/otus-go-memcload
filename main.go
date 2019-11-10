@@ -4,8 +4,11 @@ import (
 	"bufio"
 	"compress/gzip"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +27,21 @@ const (
 	MemcacheInsertAttemptDelay = 200 * time.Millisecond
 )
 
+// Options for command line interface
+type Options struct {
+	Pattern                string
+	IDFA, GAID, ADID, DVID string
+	Dry, Debug             bool
+}
+
+// Job keeps data for processing with goroutines
+type Job struct {
+	Clients map[string]*memcache.Client
+	File    string
+	Dry     bool
+	Index   int
+}
+
 // Record represents one data parsed from one line of a log file.
 type Record struct {
 	Type string
@@ -33,8 +51,8 @@ type Record struct {
 	Apps []uint32
 }
 
-// Save record to Memcached
-func (record *Record) Save(client *memcache.Client, dry bool) {
+// Insert record from a log file to Memcached
+func (record *Record) Insert(clients map[string]*memcache.Client, dry bool) {
 	recordProto := &appsinstalled.UserApps{
 		Lon:  &record.Lon,
 		Lat:  &record.Lat,
@@ -45,13 +63,19 @@ func (record *Record) Save(client *memcache.Client, dry bool) {
 
 	if dry {
 		messageText := proto.MarshalTextString(recordProto)
-		log.Infof("%s -> %s", key, strings.Replace(messageText, "\n", " ", -1))
+		log.Debugf("%s -> %s\n", key, strings.Replace(messageText, "\n", " ", -1))
 		return
 	}
 
 	message, err := proto.Marshal(recordProto)
 	if err != nil {
 		log.Warnln("Could not serialize record:", record)
+		return
+	}
+
+	client, ok := clients[record.Type]
+	if !ok {
+		log.Warnln("Unexpected device type:", record.Type)
 		return
 	}
 
@@ -106,7 +130,7 @@ func ParseRecord(row string) (Record, error) {
 
 // ProcessLogFile reads file specified by `path` argument and
 // processes each row of this file
-func ProcessLogFile(client *memcache.Client, dry bool, path string) {
+func ProcessLogFile(clients map[string]*memcache.Client, dry bool, path string) {
 	file, err := os.Open(path)
 
 	if err != nil {
@@ -122,6 +146,8 @@ func ProcessLogFile(client *memcache.Client, dry bool, path string) {
 	defer file.Close()
 	defer gz.Close()
 
+	log.Infof("Processing %s\n", path)
+
 	scanner := bufio.NewScanner(gz)
 	scanner.Split(bufio.ScanLines)
 
@@ -132,47 +158,79 @@ func ProcessLogFile(client *memcache.Client, dry bool, path string) {
 			log.Warnf("%s for: %s", err, row)
 			continue
 		}
-		record.Save(client, dry)
+		record.Insert(clients, dry)
+	}
+	log.Infof("File %s has been processed successfully.\n", path)
+}
+
+func worker(jobs chan Job, results []chan string) {
+	for job := range jobs {
+		ProcessLogFile(job.Clients, job.Dry, job.File)
+		results[job.Index] <- job.File
 	}
 }
 
-func worker(id int, jobs chan int, results []chan int) {
-	times := [5]int{8, 3, 6, 2, 5}
+func parseCommandLine() Options {
+	var options Options
 
-	for j := range jobs {
-		log.Debugln("Worker", id, "started  job", j)
-		time.Sleep(time.Second * time.Duration(times[j]))
-		log.Debugln("Worker", id, "finished job", j)
-		results[j] <- j * 2
+	flag.StringVar(&options.Pattern, "pattern", "", "Pattern for searching log files")
+	flag.StringVar(&options.IDFA, "idfa", "127.0.0.1:33013", "")
+	flag.StringVar(&options.GAID, "gaid", "127.0.0.1:33014", "")
+	flag.StringVar(&options.ADID, "adid", "127.0.0.1:33015", "")
+	flag.StringVar(&options.DVID, "dvid", "127.0.0.1:33016", "")
+	flag.BoolVar(&options.Dry, "dry", false, "Dry run (without interaction with Memcached)")
+	flag.BoolVar(&options.Debug, "debug", false, "Show debug messages")
+	flag.Parse()
+
+	if options.Debug {
+		log.SetLevel(log.DebugLevel)
+	} else {
+		log.SetLevel(log.InfoLevel)
 	}
+	log.SetFormatter(&log.TextFormatter{FullTimestamp: true})
+
+	if options.Pattern == "" {
+		log.Fatalf("Pattern for searching log files must be provided.")
+	}
+
+	return options
 }
 
 func main() {
-	log.SetLevel(log.InfoLevel)
-	log.SetFormatter(&log.TextFormatter{FullTimestamp: true})
+	options := parseCommandLine()
 
-	// working_directory := "/home/sk/Dev/files/"
+	files, err := filepath.Glob(options.Pattern)
+	if err != nil {
+		log.Fatalf("No files found for pattern %s", options.Pattern)
+	}
+	sort.Strings(files)
 
-	// nJobs := 5
-	// jobs := make(chan int)
+	log.Infoln("Found:", len(files), "files")
 
-	// results := make([]chan int, nJobs)
-	// for i := 0; i < nJobs; i++ {
-	// 	results[i] = make(chan int)
-	// }
+	clients := make(map[string]*memcache.Client)
+	clients["idfa"] = memcache.New(options.IDFA)
+	clients["gaid"] = memcache.New(options.GAID)
+	clients["adid"] = memcache.New(options.ADID)
+	clients["dvid"] = memcache.New(options.DVID)
 
-	// log.Debugln("Starting workers...")
-	// for i := 0; i < nJobs; i++ {
-	// 	go worker(i+1, jobs, results)
-	// 	jobs <- i
-	// }
-	// log.Debugln("Workers have been started successfully")
-	// close(jobs)
+	nJobs := len(files)
+	jobs := make(chan Job)
 
-	// log.Debugln("Waiting for results...")
-	// for i := 0; i < nJobs; i++ {
-	// 	log.Debugf("Got: %d", <-results[i])
-	// }
-	mc := memcache.New("127.0.0.1:33016")
-	ProcessLogFile(mc, false, "/home/sk/Dev/files/test20180404000000.tsv.gz")
+	results := make([]chan string, nJobs)
+	for i := 0; i < nJobs; i++ {
+		results[i] = make(chan string)
+	}
+
+	log.Debugln("Starting workers...")
+	for i := 0; i < nJobs; i++ {
+		go worker(jobs, results)
+		jobs <- Job{clients, files[i], options.Dry, i}
+	}
+	log.Debugln("Workers have been started successfully")
+	close(jobs)
+
+	log.Debugln("Waiting for results...")
+	for i := 0; i < nJobs; i++ {
+		log.Infof("Got: %s\n", <-results[i])
+	}
 }
