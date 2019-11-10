@@ -51,7 +51,7 @@ To get help:
 To process the sample log file in "dry" mode:
 ```
 cp ./src/github.com/stkrizh/otus-go-memcload/sample.tsv.gz .
-./bin/otus-go-memcload --pattern "./logs/*.tsv.gz" --dry --debug
+./bin/otus-go-memcload --pattern "*.tsv.gz" --dry --debug
 ```
 
 To run Memcached:
@@ -62,7 +62,7 @@ memcached -l 0.0.0.0:33013,0.0.0.0:33014,0.0.0.0:33015,0.0.0.0:33016
 To process the sample log file and save records from it to Memcached (make sure it's running):
 ```
 cp ./src/github.com/stkrizh/otus-go-memcload/sample.tsv.gz .
-./bin/otus-go-memcload --pattern "./logs/*.tsv.gz"
+./bin/otus-go-memcload --pattern "*.tsv.gz"
 ```
 
 # Comparison with the implementation in Python
