@@ -163,6 +163,16 @@ func ProcessLogFile(clients map[string]*memcache.Client, dry bool, path string) 
 	log.Infof("File %s has been processed successfully.\n", path)
 }
 
+// DotRename renames processed log file by prepending its name with "."
+func DotRename(path string) {
+	head, fn := filepath.Split(path)
+
+	err := os.Rename(path, filepath.Join(head, "."+fn))
+	if err != nil {
+		log.Errorf("Error while renaming file: %s", path)
+	}
+}
+
 func worker(jobs chan Job, results []chan string) {
 	for job := range jobs {
 		ProcessLogFile(job.Clients, job.Dry, job.File)
@@ -221,16 +231,15 @@ func main() {
 		results[i] = make(chan string)
 	}
 
-	log.Debugln("Starting workers...")
 	for i := 0; i < nJobs; i++ {
 		go worker(jobs, results)
 		jobs <- Job{clients, files[i], options.Dry, i}
 	}
-	log.Debugln("Workers have been started successfully")
 	close(jobs)
 
-	log.Debugln("Waiting for results...")
 	for i := 0; i < nJobs; i++ {
-		log.Infof("Got: %s\n", <-results[i])
+		processedFile := <-results[i]
+		log.Infof("Renaming: %s\n", processedFile)
+		DotRename(processedFile)
 	}
 }
