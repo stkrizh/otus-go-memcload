@@ -20,6 +20,9 @@ import (
 )
 
 const (
+	// AcceptableInvalidRecordRate defines the maximum portion of invalid records
+	// in a log file
+	AcceptableInvalidRecordRate = 0.01
 	// MemcacheInsertMaxAttempts defines how many attempts would be to
 	// insert a record to Memcached
 	MemcacheInsertMaxAttempts = 5
@@ -52,7 +55,7 @@ type Record struct {
 }
 
 // Insert record from a log file to Memcached
-func (record *Record) Insert(clients map[string]*memcache.Client, dry bool) {
+func (record *Record) Insert(clients map[string]*memcache.Client, dry bool) bool {
 	recordProto := &appsinstalled.UserApps{
 		Lon:  &record.Lon,
 		Lat:  &record.Lat,
@@ -64,19 +67,19 @@ func (record *Record) Insert(clients map[string]*memcache.Client, dry bool) {
 	if dry {
 		messageText := proto.MarshalTextString(recordProto)
 		log.Debugf("%s -> %s\n", key, strings.Replace(messageText, "\n", " ", -1))
-		return
+		return true
 	}
 
 	message, err := proto.Marshal(recordProto)
 	if err != nil {
 		log.Warnln("Could not serialize record:", record)
-		return
+		return false
 	}
 
 	client, ok := clients[record.Type]
 	if !ok {
 		log.Warnln("Unexpected device type:", record.Type)
-		return
+		return false
 	}
 
 	item := memcache.Item{Key: key, Value: message}
@@ -86,8 +89,11 @@ func (record *Record) Insert(clients map[string]*memcache.Client, dry bool) {
 			time.Sleep(MemcacheInsertAttemptDelay)
 			continue
 		}
-		return
+		return true
 	}
+
+	log.Warnf("Could not connect to Memcached: %s\n", record.Type)
+	return false
 }
 
 // ParseRecord parses a new Record from raw row that must contain
@@ -151,16 +157,37 @@ func ProcessLogFile(clients map[string]*memcache.Client, dry bool, path string) 
 	scanner := bufio.NewScanner(gz)
 	scanner.Split(bufio.ScanLines)
 
+	var total, failed float64 = 0.0, 0.0
+
 	for scanner.Scan() {
 		row := scanner.Text()
+		total++
+
 		record, err := ParseRecord(row)
 		if err != nil {
 			log.Warnf("%s for: %s", err, row)
+			failed++
 			continue
 		}
-		record.Insert(clients, dry)
+
+		ok := record.Insert(clients, dry)
+		if !ok {
+			failed++
+		}
+
 	}
-	log.Infof("File %s has been processed successfully.\n", path)
+
+	if total > 0 && failed/total > AcceptableInvalidRecordRate {
+		log.Errorf(
+			"Too many invalid records in %s (Total: %d | Error: %d)\n",
+			path,
+			int(total),
+			int(failed),
+		)
+		return
+	}
+
+	log.Infof("Done %s (Total: %d | Error: %d)\n", path, int(total), int(failed))
 }
 
 // DotRename renames processed log file by prepending its name with "."
@@ -213,6 +240,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("No files found for pattern %s", options.Pattern)
 	}
+
+	// Filter out dot-prepended files
+	n := 0
+	for _, file := range files {
+		_, fn := filepath.Split(file)
+		if !strings.HasPrefix(fn, ".") {
+			files[n] = file
+			n++
+		}
+	}
+	files = files[:n]
+
 	sort.Strings(files)
 
 	log.Infoln("Found:", len(files), "files")
