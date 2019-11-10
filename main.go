@@ -122,13 +122,12 @@ func ParseRecord(row string) (Record, error) {
 	record.Lon = lon
 
 	rawApps := strings.Split(parts[4], ",")
-	record.Apps = make([]uint32, len(rawApps))
-	for ix, rawApp := range rawApps {
+	for _, rawApp := range rawApps {
 		app, err := strconv.ParseUint(rawApp, 10, 32)
 		if err != nil {
 			continue
 		}
-		record.Apps[ix] = uint32(app)
+		record.Apps = append(record.Apps, uint32(app))
 	}
 
 	return record, nil
